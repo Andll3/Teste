@@ -196,9 +196,50 @@
   // Initialize Firebase
   const app = initializeApp(firebaseConfig);
   const analytics = getAnalytics(app);
+<script type="module">
+  // 1. Importações necessárias
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+  import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+  import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+  // 2. SUA CONFIGURAÇÃO (Copie exatamente o que aparece na sua imagem image_234fdd.png)
+  const firebaseConfig = {
+    apiKey: "SUA_API_KEY",
+    authDomain: "SEU_PROJETO.firebaseapp.com",
+    projectId: "SEU_PROJETO",
+    storageBucket: "SEU_PROJETO.appspot.com",
+    messagingSenderId: "ID",
+    appId: "APP_ID"
+  };
+
+  // 3. Inicialização
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+  const provider = new GoogleAuthProvider();
+
+  // 4. Função de Login (anexada ao window para o seu botão HTML encontrar)
+  window.fazerLogin = async () => {
+    try {
+      const result = await signInWithPopup(auth, provider);
+      console.log("Usuário logado:", result.user.displayName);
+    } catch (error) {
+      console.error("Erro ao logar:", error);
+    }
+  };
+
+  // 5. Observar login e Sincronizar
+  onAuthStateChanged(auth, async (user) => {
+    if (user) {
+      console.log("Sincronizando dados para:", user.uid);
+      // Aqui chamaremos a função para buscar seus agendamentos na nuvem
+    }
+  });
+</script>
 </body>
 </script>
 </html>
+
 
 
 
