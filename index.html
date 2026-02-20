@@ -7,7 +7,6 @@
     <title>Agenda</title>
     <link rel="manifest" href="manifest.json">
     <style>
-        /* INTERFACE AMPLIADA */
         body { 
             font-family: 'Segoe UI', Roboto, sans-serif; 
             padding: 20px; 
@@ -35,6 +34,11 @@
             width: 100%; padding: 20px; border-radius: 10px; 
             cursor: pointer; font-weight: bold; font-size: 20px; 
         }
+        .btn-login {
+            background: #4285F4; color: white; border: none;
+            padding: 10px 20px; border-radius: 8px; cursor: pointer;
+            margin-bottom: 15px; font-weight: bold;
+        }
         .item-agendado { 
             background: white; padding: 20px; margin-top: 15px; 
             border-radius: 12px; border-left: 8px solid #28a745; 
@@ -45,9 +49,16 @@
             background: #dc3545; color: white; border: none; 
             padding: 12px 20px; border-radius: 8px; font-weight: bold;
         }
+        #user-info { font-size: 14px; color: #666; margin-bottom: 10px; }
     </style>
 </head>
 <body>
+
+    <div id="auth-section">
+        <p id="user-info">Carregando status...</p>
+        <button id="btn-login" class="btn-login" onclick="fazerLogin()">Logar com Google</button>
+        <button id="btn-logout" class="btn-login" style="display:none; background:#666;" onclick="fazerLogout()">Sair</button>
+    </div>
 
     <div class="card">
         <h2>📅 Novo Agendamento</h2>
@@ -67,277 +78,164 @@
     <h3>Meus Compromissos</h3>
     <div id="lista-agendamentos"></div>
 
-    <script>
-        let db;
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-        // Iniciar Banco de Dados imediatamente
+        // Configuração do seu Firebase (Verificada conforme suas imagens)
+        const firebaseConfig = {
+            apiKey: "AIzaSyAK6-MYxY52ONgx6huRJgM1h3dkTLbd0ZU",
+            authDomain: "agendamento-web-f99e0.firebaseapp.com",
+            projectId: "agendamento-web-f99e0",
+            storageBucket: "agendamento-web-f99e0.firebasestorage.app",
+            messagingSenderId: "286324164348",
+            appId: "1:286324164348:web:25f818405442fa75827979",
+            measurementId: "G-SEPT1D4KHC"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db_fire = getFirestore(app);
+        const provider = new GoogleAuthProvider();
+
+        let db_local;
+
+        // --- BANCO LOCAL (IndexedDB) ---
         const request = indexedDB.open("AgendamentosDB", 1);
-
         request.onupgradeneeded = (e) => {
-            db = e.target.result;
-            if (!db.objectStoreNames.contains("agendamentos")) {
-                const store = db.createObjectStore("agendamentos", { keyPath: "id", autoIncrement: true });
+            db_local = e.target.result;
+            if (!db_local.objectStoreNames.contains("agendamentos")) {
+                const store = db_local.createObjectStore("agendamentos", { keyPath: "id", autoIncrement: true });
                 store.createIndex("data_hora", ["data", "hora"], { unique: true });
             }
         };
-
         request.onsuccess = (e) => {
-            db = e.target.result;
-            console.log("Banco conectado!");
+            db_local = e.target.result;
             atualizarLista();
         };
 
-        request.onerror = (e) => alert("Erro ao abrir banco de dados local.");
+        // --- FUNÇÕES DE LOGIN ---
+        window.fazerLogin = async () => {
+            try { await signInWithPopup(auth, provider); } 
+            catch (e) { console.error(e); alert("Erro ao logar."); }
+        };
 
-        // FUNÇÃO SALVAR (Centralizada)
-        function tentarSalvar() {
-            console.log("Tentando salvar...");
-            
-            if (!db) {
-                alert("O banco de dados ainda não carregou. Aguarde 2 segundos.");
-                return;
+        window.fazerLogout = () => {
+            signOut(auth).then(() => location.reload());
+        };
+
+        // --- SINCRONIZAÇÃO ---
+        window.sincronizarComNuvem = async () => {
+            const user = auth.currentUser;
+            if (!user) return;
+
+            const tx = db_local.transaction("agendamentos", "readonly");
+            const store = tx.objectStore("agendamentos");
+            const requestAll = store.getAll();
+
+            requestAll.onsuccess = async () => {
+                const todos = requestAll.result;
+                try {
+                    await setDoc(doc(db_fire, "usuarios", user.uid), {
+                        agendamentos: todos,
+                        atualizadoEm: new Date()
+                    });
+                    console.log("Nuvem atualizada!");
+                } catch (e) { console.error("Erro nuvem:", e); }
+            };
+        };
+
+        window.baixarDaNuvem = async (user) => {
+            const docRef = doc(db_fire, "usuarios", user.uid);
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) {
+                const dados = docSnap.data().agendamentos;
+                const tx = db_local.transaction("agendamentos", "readwrite");
+                const store = tx.objectStore("agendamentos");
+                store.clear(); // Limpa local para receber o da nuvem
+                dados.forEach(item => {
+                    delete item.id; // Deixa o autoIncrement local agir
+                    store.add(item);
+                });
+                tx.oncomplete = () => atualizarLista();
             }
+        };
 
+        // --- LÓGICA DE AGENDAMENTO ---
+        window.tentarSalvar = function() {
             const valItem = document.getElementById('item').value;
             const valData = document.getElementById('data').value;
             const valHora = document.getElementById('hora').value;
 
             if (!valItem || !valData || !valHora) {
-                alert("⚠️ Preencha todos os campos antes de confirmar!");
-                return;
+                alert("Preencha tudo!"); return;
             }
 
-            try {
-                const tx = db.transaction("agendamentos", "readwrite");
-                const store = tx.objectStore("agendamentos");
-                const index = store.index("data_hora");
-
-                const consulta = index.get([valData, valHora]);
-
-                consulta.onsuccess = () => {
-                    if (consulta.result) {
-                        alert("❌ CONFLITO: Você já tem um compromisso nesta data e hora!");
-                    } else {
-                        const addReq = store.add({ item: valItem, data: valData, hora: valHora });
-                        addReq.onsuccess = () => {
-                            alert("✅ Agendamento salvo!");
-                            limparFormulario();
-                            atualizarLista();
-                        };
-                    }
-                };
-            } catch (err) {
-                console.error(err);
-                alert("Erro técnico ao salvar. Recarregue a página.");
-            }
-        }
-
-        function atualizarLista() {
-            const container = document.getElementById('lista-agendamentos');
-            if (!container) return;
-            container.innerHTML = "";
-
-            if (!db) return;
-
-            const tx = db.transaction("agendamentos", "readonly");
+            const tx = db_local.transaction("agendamentos", "readwrite");
             const store = tx.objectStore("agendamentos");
-            
+            const addReq = store.add({ item: valItem, data: valData, hora: valHora });
+
+            addReq.onsuccess = () => {
+                limparFormulario();
+                atualizarLista();
+                window.sincronizarComNuvem(); // Sincroniza logo após salvar
+            };
+            addReq.onerror = () => alert("Conflito de horário!");
+        };
+
+        window.atualizarLista = function() {
+            const container = document.getElementById('lista-agendamentos');
+            container.innerHTML = "";
+            const tx = db_local.transaction("agendamentos", "readonly");
+            const store = tx.objectStore("agendamentos");
             store.openCursor().onsuccess = (e) => {
                 const cursor = e.target.result;
                 if (cursor) {
                     const div = document.createElement('div');
                     div.className = 'item-agendado';
                     div.innerHTML = `
-                        <div>
-                            <strong>${cursor.value.item}</strong>
-                            <span>${cursor.value.data} às ${cursor.value.hora}</span>
-                        </div>
+                        <div><strong>${cursor.value.item}</strong><br>${cursor.value.data} às ${cursor.value.hora}</div>
                         <button class="btn-excluir" onclick="deletarItem(${cursor.value.id})">Excluir</button>
                     `;
                     container.appendChild(div);
                     cursor.continue();
                 }
             };
-        }
+        };
 
-        function deletarItem(id) {
-            if (confirm("Deseja apagar este registro?")) {
-                const tx = db.transaction("agendamentos", "readwrite");
-                const store = tx.objectStore("agendamentos");
-                store.delete(id).onsuccess = () => atualizarLista();
-            }
-        }
+        window.deletarItem = function(id) {
+            const tx = db_local.transaction("agendamentos", "readwrite");
+            tx.objectStore("agendamentos").delete(id);
+            tx.oncomplete = () => {
+                atualizarLista();
+                window.sincronizarComNuvem();
+            };
+        };
 
         function limparFormulario() {
             document.getElementById('item').value = "";
             document.getElementById('data').value = "";
             document.getElementById('hora').value = "";
         }
-    </script>
-     <script type="module">
-  // Import the functions you need from the SDKs you need
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-app.js";
-  import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-analytics.js";
-  // TODO: Add SDKs for Firebase products that you want to use
-  // https://firebase.google.com/docs/web/setup#available-libraries
 
-  // Your web app's Firebase configuration
-  // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-  const firebaseConfig = {
-    apiKey: "AIzaSyAK6-MYxY52ONgx6huRJgM1h3dkTLbd0ZU",
-    authDomain: "agendamento-web-f99e0.firebaseapp.com",
-    projectId: "agendamento-web-f99e0",
-    storageBucket: "agendamento-web-f99e0.firebasestorage.app",
-    messagingSenderId: "286324164348",
-    appId: "1:286324164348:web:25f818405442fa75827979",
-    measurementId: "G-SEPT1D4KHC"
-  };
+        // --- MONITOR DE USUÁRIO ---
+        onAuthStateChanged(auth, (user) => {
+            const btnLogin = document.getElementById('btn-login');
+            const btnLogout = document.getElementById('btn-logout');
+            const userInfo = document.getElementById('user-info');
 
-  // Initialize Firebase
-  const app = initializeApp(firebaseConfig);
-  const analytics = getAnalytics(app);
-<script type="module">
-  // 1. Importações necessárias
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-  import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-  import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-
-  // 2. SUA CONFIGURAÇÃO (Copie exatamente o que aparece na sua imagem image_234fdd.png)
-  const firebaseConfig = {
-    apiKey: "SUA_API_KEY",
-    authDomain: "SEU_PROJETO.firebaseapp.com",
-    projectId: "SEU_PROJETO",
-    storageBucket: "SEU_PROJETO.appspot.com",
-    messagingSenderId: "ID",
-    appId: "APP_ID"
-  };
-
-  // 3. Inicialização
-  const app = initializeApp(firebaseConfig);
-  const auth = getAuth(app);
-  const db = getFirestore(app);
-  const provider = new GoogleAuthProvider();
-
-  // 4. Função de Login (anexada ao window para o seu botão HTML encontrar)
-  window.fazerLogin = async () => {
-    try {
-      const result = await signInWithPopup(auth, provider);
-      console.log("Usuário logado:", result.user.displayName);
-    } catch (error) {
-      console.error("Erro ao logar:", error);
-    }
-  };
-
-  // 5. Observar login e Sincronizar
-  onAuthStateChanged(auth, async (user) => {
-    if (user) {
-      console.log("Sincronizando dados para:", user.uid);
-      // Aqui chamaremos a função para buscar seus agendamentos na nuvem
-    }
-  });
-</script>
-<script type="module">
-  // 1. Importações dos módulos do Firebase
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-  import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-  import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
-
-  // 2. CONFIGURAÇÃO (Substitua pelos seus dados da imagem image_234fdd.png)
-  const firebaseConfig = {
-    apiKey: "SUA_API_KEY_AQUI",
-    authDomain: "SEU_PROJETO.firebaseapp.com",
-    projectId: "SEU_PROJETO",
-    storageBucket: "SEU_PROJETO.appspot.com",
-    messagingSenderId: "SEU_ID",
-    appId: "SEU_APP_ID"
-  };
-
-  // 3. Inicialização do Firebase
-  const app = initializeApp(firebaseConfig);
-  const auth = getAuth(app);
-  const db = getFirestore(app);
-  const provider = new GoogleAuthProvider();
-
-  // --- FUNÇÕES DE INTERFACE ---
-
-  // Função para Logar
-  window.fazerLogin = async () => {
-    try {
-      await signInWithPopup(auth, provider);
-    } catch (error) {
-      console.error("Erro no login:", error);
-      alert("Erro ao logar com Google.");
-    }
-  };
-
-  // Função para Sair (Logout)
-  window.fazerLogout = () => {
-    signOut(auth).then(() => {
-      location.reload(); // Recarrega a página ao sair
-    });
-  };
-
-  // --- FUNÇÕES DE BANCO DE DADOS (Firestore) ---
-
-  // Função para SALVAR dados (Substitui o localStorage.setItem)
-  window.salvarNoFirebase = async (dados) => {
-    const user = auth.currentUser;
-    if (user) {
-      try {
-        await setDoc(doc(db, "usuarios", user.uid), {
-          meusAgendamentos: dados,
-          ultimaAtualizacao: new Date()
+            if (user) {
+                btnLogin.style.display = 'none';
+                btnLogout.style.display = 'block';
+                userInfo.innerText = "Logado como: " + user.displayName;
+                window.baixarDaNuvem(user); // Baixa os dados ao logar
+            } else {
+                btnLogin.style.display = 'block';
+                btnLogout.style.display = 'none';
+                userInfo.innerText = "Você não está logado.";
+            }
         });
-        console.log("Dados sincronizados na nuvem!");
-      } catch (e) {
-        console.error("Erro ao salvar dados:", e);
-      }
-    }
-  };
-
-  // Função para BUSCAR dados (Substitui o localStorage.getItem)
-  window.carregarDoFirebase = async () => {
-    const user = auth.currentUser;
-    if (user) {
-      const docRef = doc(db, "usuarios", user.uid);
-      const docSnap = await getDoc(docRef);
-
-      if (docSnap.exists()) {
-        const dadosVindosDaNuvem = docSnap.data().meusAgendamentos;
-        console.log("Dados carregados da nuvem.");
-        
-        // AQUI: Chame a função que você já tem para desenhar a tabela
-        // Exemplo: mostrarAgendamentosNaTela(dadosVindosDaNuvem);
-        return dadosVindosDaNuvem;
-      }
-    }
-    return null;
-  };
-
-  // --- MONITOR DE STATUS (Executa automaticamente) ---
-  onAuthStateChanged(auth, async (user) => {
-    const btnLogin = document.getElementById('btn-login');
-    const userInfo = document.getElementById('user-info'); // Se você tiver um <p> com esse ID
-
-    if (user) {
-      console.log("Usuário logado:", user.displayName);
-      if (btnLogin) btnLogin.style.display = 'none';
-      if (userInfo) userInfo.innerText = `Olá, ${user.displayName}`;
-      
-      // Busca os dados assim que logar
-      await window.carregarDoFirebase();
-    } else {
-      console.log("Nenhum usuário logado.");
-      if (btnLogin) btnLogin.style.display = 'block';
-    }
-  });
-</script>
+    </script>
 </body>
-</script>
 </html>
-
-
-
-
-
-
